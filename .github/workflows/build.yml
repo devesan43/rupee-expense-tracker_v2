@@ -1,0 +1,66 @@
+name: Build Flutter Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.29.0'
+          channel: 'stable'
+          cache: true
+
+      - name: Generate Android native files
+        run: flutter create . --platforms=android --org com.expensetracker.app
+
+      - name: Set Android NDK version
+        run: |
+          sed -i '/android {/a\    ndkVersion = "27.0.12077973"' android/app/build.gradle.kts
+
+      - name: Enforce compileSdk 36 on subprojects
+        run: |
+          cat << 'EOF' >> android/build.gradle
+
+          subprojects {
+              afterEvaluate { project ->
+                  if (project.hasProperty('android')) {
+                      project.android {
+                          compileSdkVersion 36
+                      }
+                  }
+              }
+          }
+          EOF
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Clean build
+        run: flutter clean
+
+      - name: Build APK
+        run: flutter build apk --release --no-tree-shake-icons --target-platform android-arm,android-arm64,android-x64
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ExpenseTracker-APK
+          path: build/app/outputs/flutter-apk/*.apk
+          if-no-files-found: error

@@ -1,103 +1,3888 @@
-name: Build Flutter Android APK
+import 'dart:async';
+import 'dart:io';
 
-on:
-  push:
-    branches:
-      - main
-      - master
+import 'package:excel/excel.dart' as ex;
+import 'package:file_picker/file_picker.dart';
+import 'package:fl_chart/fl_chart.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_sms_inbox/flutter_sms_inbox.dart';
+import 'package:intl/intl.dart';
+import 'package:local_auth/local_auth.dart';
+import 'package:path/path.dart' as p;
+import 'package:pdf/widgets.dart' as pw;
+import 'package:permission_handler/permission_handler.dart';
+import 'package:printing/printing.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sqflite/sqflite.dart';
 
-  pull_request:
-    branches:
-      - main
-      - master
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(const ExpenseTrackerApp());
+}
 
-jobs:
-  build:
-    name: Build Release APK
-    runs-on: ubuntu-latest
+class ExpenseTrackerApp extends StatelessWidget {
+  const ExpenseTrackerApp({super.key});
 
-    steps:
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Expense Tracker',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xff1b5e20),
+        ),
+      ),
+      home: const LockGate(),
+    );
+  }
+}
 
-      # 1. Checkout source code
-      - name: Checkout
-        uses: actions/checkout@v5
+// ============================================================
+// TRANSACTION MODEL
+// ============================================================
 
-      # 2. Setup Java 17
-      - name: Set up Java 17
-        uses: actions/setup-java@v5
-        with:
-          distribution: zulu
-          java-version: '17'
+class TransactionModel {
+  int? id;
+  double amount;
+  String type;
+  String account;
+  String category;
+  String subCategory;
+  String date;
+  String description;
+  String? toAccount;
+  String? bank;
+  String? merchant;
+  String? reference;
+  String? source;
 
-      # 3. Setup Flutter
-      - name: Set up Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.35.7'
-          channel: stable
-          cache: true
+  TransactionModel({
+    this.id,
+    required this.amount,
+    required this.type,
+    required this.account,
+    required this.category,
+    required this.subCategory,
+    required this.date,
+    required this.description,
+    this.toAccount,
+    this.bank,
+    this.merchant,
+    this.reference,
+    this.source,
+  });
 
-      # 4. Check Flutter
-      - name: Flutter Doctor
-        run: flutter doctor -v
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'amount': amount,
+      'type': type,
+      'account': account,
+      'toAccount': toAccount,
+      'category': category,
+      'subCategory': subCategory,
+      'date': date,
+      'description': description,
+      'bank': bank,
+      'merchant': merchant,
+      'reference': reference,
+      'source': source,
+    };
+  }
 
-      # 5. Generate Android project
-      - name: Generate Android project
-        run: |
-          flutter create . \
-            --platforms=android \
-            --org com.expensetracker.app
+  factory TransactionModel.fromMap(Map<String, dynamic> m) {
+    return TransactionModel(
+      id: m['id'],
+      amount: (m['amount'] as num).toDouble(),
+      type: m['type'] ?? 'Expense',
+      account: m['account'] ?? 'Cash',
+      toAccount: m['toAccount'],
+      category: m['category'] ?? 'Other',
+      subCategory: m['subCategory'] ?? '',
+      date: m['date'] ?? '',
+      description: m['description'] ?? '',
+      bank: m['bank'],
+      merchant: m['merchant'],
+      reference: m['reference'],
+      source: m['source'],
+    );
+  }
+}
 
-      # 6. Verify Android project
-      - name: Verify Android project
-        run: |
-          echo "Android directory:"
-          ls -la android
+// ============================================================
+// RECURRING MODEL
+// ============================================================
 
-          echo ""
-          echo "Gradle files:"
-          find android -type f | sort | head -200
+class RecurringExpense {
+  int? id;
+  String name;
+  String account;
+  String category;
+  double amount;
+  int day;
+  String frequency;
 
-      # 7. Get dependencies
-      - name: Get dependencies
-        run: flutter pub get
+  RecurringExpense({
+    this.id,
+    required this.name,
+    required this.account,
+    required this.category,
+    required this.amount,
+    required this.day,
+    this.frequency = 'Monthly',
+  });
 
-      # 8. Clean
-      - name: Flutter clean
-        run: flutter clean
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'name': name,
+      'account': account,
+      'category': category,
+      'amount': amount,
+      'day': day,
+      'frequency': frequency,
+    };
+  }
 
-      # 9. Get dependencies again
-      - name: Get dependencies after clean
-        run: flutter pub get
+  factory RecurringExpense.fromMap(Map<String, dynamic> m) {
+    return RecurringExpense(
+      id: m['id'],
+      name: m['name'] ?? '',
+      account: m['account'] ?? 'Bank Account',
+      category: m['category'] ?? 'Bills',
+      amount: (m['amount'] as num).toDouble(),
+      day: m['day'] ?? 1,
+      frequency: m['frequency'] ?? 'Monthly',
+    );
+  }
+}
 
-      # 10. Build APK
-      - name: Build Release APK
-        run: |
-          flutter build apk \
-            --release \
-            --no-tree-shake-icons
+// ============================================================
+// DATABASE
+// ============================================================
 
-      # 11. Find APK
-      - name: Find APK
-        if: always()
-        run: |
-          echo "================================"
-          echo "APK FILES"
-          echo "================================"
+class DB {
+  static Database? _database;
 
-          find . -type f -name "*.apk" -print
+  static Future<Database> get database async {
+    if (_database != null) return _database!;
 
-          echo ""
-          echo "================================"
-          echo "BUILD DIRECTORY"
-          echo "================================"
+    final path = p.join(
+      await getDatabasesPath(),
+      'expense_tracker.db',
+    );
 
-          find build -maxdepth 6 -type f 2>/dev/null | sort | head -300
+    _database = await openDatabase(
+      path,
+      version: 2,
+      onCreate: (db, version) async {
+        await _createTables(db);
 
-      # 12. Upload APK
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: ExpenseTracker-APK
-          path: build/app/outputs/flutter-apk/*.apk
-          if-no-files-found: error
+        for (final account in [
+          'Cash',
+          'Bank Account',
+          'Credit Card',
+        ]) {
+          await db.insert(
+            'balances',
+            {
+              'account': account,
+              'opening': 0.0,
+            },
+            conflictAlgorithm: ConflictAlgorithm.ignore,
+          );
+        }
+      },
+      onUpgrade: (db, oldVersion, newVersion) async {
+        if (oldVersion < 2) {
+          await _safeAddColumn(db, 'transactions', 'bank', 'TEXT');
+          await _safeAddColumn(db, 'transactions', 'merchant', 'TEXT');
+          await _safeAddColumn(db, 'transactions', 'reference', 'TEXT');
+          await _safeAddColumn(db, 'transactions', 'source', 'TEXT');
+
+          await _safeAddColumn(
+            db,
+            'recurring',
+            'frequency',
+            "TEXT DEFAULT 'Monthly'",
+          );
+        }
+      },
+    );
+
+    return _database!;
+  }
+
+  static Future<void> _createTables(Database db) async {
+    await db.execute('''
+      CREATE TABLE transactions(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        amount REAL NOT NULL,
+        type TEXT NOT NULL,
+        account TEXT NOT NULL,
+        toAccount TEXT,
+        category TEXT,
+        subCategory TEXT,
+        date TEXT,
+        description TEXT,
+        bank TEXT,
+        merchant TEXT,
+        reference TEXT,
+        source TEXT
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE categories(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE balances(
+        account TEXT PRIMARY KEY,
+        opening REAL NOT NULL
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE budgets(
+        month TEXT NOT NULL,
+        category TEXT NOT NULL,
+        amount REAL NOT NULL,
+        PRIMARY KEY(month, category)
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE recurring(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        account TEXT NOT NULL,
+        category TEXT NOT NULL,
+        amount REAL NOT NULL,
+        day INTEGER NOT NULL,
+        frequency TEXT DEFAULT 'Monthly'
+      )
+    ''');
+  }
+
+  static Future<void> _safeAddColumn(
+    Database db,
+    String table,
+    String column,
+    String type,
+  ) async {
+    try {
+      await db.execute(
+        'ALTER TABLE $table ADD COLUMN $column $type',
+      );
+    } catch (_) {}
+  }
+
+  static Future<List<TransactionModel>> allTransactions() async {
+    final db = await database;
+
+    final rows = await db.query(
+      'transactions',
+      orderBy: 'date DESC, id DESC',
+    );
+
+    return rows.map(TransactionModel.fromMap).toList();
+  }
+
+  static Future<int> insertTransaction(
+    TransactionModel transaction,
+  ) async {
+    final db = await database;
+
+    return db.insert(
+      'transactions',
+      transaction.toMap(),
+    );
+  }
+
+  static Future<void> updateTransaction(
+    TransactionModel transaction,
+  ) async {
+    final db = await database;
+
+    await db.update(
+      'transactions',
+      transaction.toMap(),
+      where: 'id=?',
+      whereArgs: [transaction.id],
+    );
+  }
+
+  static Future<void> deleteTransaction(int id) async {
+    final db = await database;
+
+    await db.delete(
+      'transactions',
+      where: 'id=?',
+      whereArgs: [id],
+    );
+  }
+
+  static Future<List<String>> categories(String type) async {
+    final defaults = <String, List<String>>{
+      'Expense': [
+        'Food',
+        'Bills',
+        'Travel',
+        'Shopping',
+        'Health',
+        'Education',
+        'Utilities',
+        'Rent',
+        'EMI',
+        'Insurance',
+        'Subscription',
+        'Other',
+      ],
+      'Income': [
+        'Salary',
+        'Business',
+        'Investment',
+        'Gift',
+        'Other',
+      ],
+      'Savings': [
+        'Emergency Fund',
+        'FD',
+        'Mutual Funds',
+        'Gold',
+        'Other',
+      ],
+      'Credit': [
+        'Personal Loan',
+        'Loan Payment',
+        'Credit Card Payment',
+        'Borrowed',
+        'Lent',
+        'Other',
+      ],
+      'Transfer': [
+        'Account Transfer',
+      ],
+    };
+
+    final result = <String>{
+      ...(defaults[type] ?? ['Other']),
+    };
+
+    final db = await database;
+
+    final rows = await db.query(
+      'categories',
+      where: 'type=?',
+      whereArgs: [type],
+    );
+
+    for (final row in rows) {
+      result.add(row['name'] as String);
+    }
+
+    return result.toList();
+  }
+
+  static Future<void> addCategory(
+    String name,
+    String type,
+  ) async {
+    final db = await database;
+
+    await db.insert(
+      'categories',
+      {
+        'name': name,
+        'type': type,
+      },
+    );
+  }
+
+  static Future<double> openingBalance(
+    String account,
+  ) async {
+    final db = await database;
+
+    final rows = await db.query(
+      'balances',
+      where: 'account=?',
+      whereArgs: [account],
+    );
+
+    if (rows.isEmpty) return 0;
+
+    return (rows.first['opening'] as num).toDouble();
+  }
+
+  static Future<void> setOpeningBalance(
+    String account,
+    double value,
+  ) async {
+    final db = await database;
+
+    await db.insert(
+      'balances',
+      {
+        'account': account,
+        'opening': value,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  static Future<Map<String, double>> budgets(
+    String month,
+  ) async {
+    final db = await database;
+
+    final rows = await db.query(
+      'budgets',
+      where: 'month=?',
+      whereArgs: [month],
+    );
+
+    return {
+      for (final row in rows)
+        row['category'] as String:
+            (row['amount'] as num).toDouble(),
+    };
+  }
+
+  static Future<void> setBudget(
+    String month,
+    String category,
+    double amount,
+  ) async {
+    final db = await database;
+
+    await db.insert(
+      'budgets',
+      {
+        'month': month,
+        'category': category,
+        'amount': amount,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  static Future<List<RecurringExpense>> recurring() async {
+    final db = await database;
+
+    final rows = await db.query(
+      'recurring',
+      orderBy: 'day ASC',
+    );
+
+    return rows.map(RecurringExpense.fromMap).toList();
+  }
+
+  static Future<void> addRecurring(
+    RecurringExpense item,
+  ) async {
+    final db = await database;
+
+    await db.insert(
+      'recurring',
+      item.toMap(),
+    );
+  }
+
+  static Future<void> deleteRecurring(int id) async {
+    final db = await database;
+
+    await db.delete(
+      'recurring',
+      where: 'id=?',
+      whereArgs: [id],
+    );
+  }
+}
+
+// ============================================================
+// LOCK GATE
+// ============================================================
+
+class LockGate extends StatefulWidget {
+  const LockGate({super.key});
+
+  @override
+  State<LockGate> createState() => _LockGateState();
+}
+
+class _LockGateState extends State<LockGate>
+    with WidgetsBindingObserver {
+  final LocalAuthentication auth = LocalAuthentication();
+  final TextEditingController pinController =
+      TextEditingController();
+
+  bool loading = true;
+  bool locked = false;
+  bool biometricAvailable = false;
+  DateTime? backgroundTime;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    initialise();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    pinController.dispose();
+    super.dispose();
+  }
+
+  Future<void> initialise() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    final pin = prefs.getString('pin');
+
+    if (pin != null && pin.isNotEmpty) {
+      locked = true;
+    }
+
+    try {
+      biometricAvailable =
+          await auth.isDeviceSupported() ||
+              await auth.canCheckBiometrics;
+    } catch (_) {
+      biometricAvailable = false;
+    }
+
+    if (locked &&
+        prefs.getBool('biometric') == true &&
+        biometricAvailable) {
+      await unlockBiometric();
+    }
+
+    if (mounted) {
+      setState(() {
+        loading = false;
+      });
+    }
+  }
+
+  Future<void> unlockBiometric() async {
+    try {
+      final success = await auth.authenticate(
+        localizedReason:
+            'Unlock Expense Tracker',
+        options: const AuthenticationOptions(
+          biometricOnly: false,
+          stickyAuth: true,
+          useErrorDialogs: true,
+        ),
+      );
+
+      if (success && mounted) {
+        setState(() {
+          locked = false;
+        });
+      }
+    } catch (_) {}
+  }
+
+  Future<void> unlockPin() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    if (pinController.text ==
+        prefs.getString('pin')) {
+      if (mounted) {
+        setState(() {
+          locked = false;
+        });
+      }
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Incorrect PIN'),
+          ),
+        );
+      }
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(
+    AppLifecycleState state,
+  ) {
+    if (state == AppLifecycleState.paused) {
+      backgroundTime = DateTime.now();
+    }
+
+    if (state == AppLifecycleState.resumed) {
+      checkAutoLock();
+    }
+  }
+
+  Future<void> checkAutoLock() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    final minutes =
+        prefs.getInt('autoLockMinutes') ?? 0;
+
+    if (minutes <= 0 || backgroundTime == null) {
+      return;
+    }
+
+    final elapsed =
+        DateTime.now().difference(backgroundTime!);
+
+    if (elapsed.inMinutes >= minutes &&
+        prefs.getString('pin') != null) {
+      if (mounted) {
+        setState(() {
+          locked = true;
+        });
+      }
+
+      if (prefs.getBool('biometric') == true &&
+          biometricAvailable) {
+        await unlockBiometric();
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (loading) {
+      return const Scaffold(
+        body: Center(
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+
+    if (!locked) {
+      return const Home();
+    }
+
+    return Scaffold(
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.lock,
+                size: 70,
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Expense Tracker',
+                style: TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 20),
+              TextField(
+                controller: pinController,
+                obscureText: true,
+                keyboardType:
+                    TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'PIN',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: unlockPin,
+                  child: const Text('Unlock'),
+                ),
+              ),
+              if (biometricAvailable)
+                TextButton.icon(
+                  onPressed: unlockBiometric,
+                  icon: const Icon(
+                    Icons.fingerprint,
+                  ),
+                  label: const Text(
+                    'Use Fingerprint / Biometric',
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================
+// HOME
+// ============================================================
+
+class Home extends StatefulWidget {
+  const Home({super.key});
+
+  @override
+  State<Home> createState() => _HomeState();
+}
+
+class _HomeState extends State<Home> {
+  final accounts = const [
+    'Cash',
+    'Bank Account',
+    'Credit Card',
+  ];
+
+  final types = const [
+    'Expense',
+    'Income',
+    'Savings',
+    'Credit',
+    'Transfer',
+  ];
+
+  List<TransactionModel> data = [];
+  List<TransactionModel> shown = [];
+
+  List<RecurringExpense> recurringItems = [];
+
+  Map<String, double> balances = {};
+  Map<String, double> budgets = {};
+
+  String period = 'Monthly';
+  String accountFilter = 'All';
+  String search = '';
+
+  DateTimeRange? selectedDates;
+
+  @override
+  void initState() {
+    super.initState();
+    load();
+  }
+
+  Future<void> load() async {
+    await createDueRecurringTransactions();
+
+    data = await DB.allTransactions();
+
+    recurringItems = await DB.recurring();
+
+    budgets = await DB.budgets(
+      DateFormat('yyyy-MM').format(DateTime.now()),
+    );
+
+    balances = {};
+
+    for (final account in accounts) {
+      balances[account] =
+          await DB.openingBalance(account);
+    }
+
+    for (final transaction in data) {
+      if (transaction.type == 'Income') {
+        balances[transaction.account] =
+            (balances[transaction.account] ?? 0) +
+                transaction.amount;
+      }
+
+      if (transaction.type == 'Expense' ||
+          transaction.type == 'Credit') {
+        balances[transaction.account] =
+            (balances[transaction.account] ?? 0) -
+                transaction.amount;
+      }
+
+      if (transaction.type == 'Savings') {
+        balances[transaction.account] =
+            (balances[transaction.account] ?? 0) -
+                transaction.amount;
+      }
+
+      if (transaction.type == 'Transfer') {
+        balances[transaction.account] =
+            (balances[transaction.account] ?? 0) -
+                transaction.amount;
+
+        if (transaction.toAccount != null) {
+          balances[transaction.toAccount!] =
+              (balances[transaction.toAccount!] ?? 0) +
+                  transaction.amount;
+        }
+      }
+    }
+
+    applyFilters();
+
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  // ==========================================================
+  // AUTOMATIC RECURRING TRANSACTIONS
+  // ==========================================================
+
+  Future<void> createDueRecurringTransactions() async {
+    final items = await DB.recurring();
+
+    final today = DateTime.now();
+
+    for (final item in items) {
+      if (item.frequency != 'Monthly') {
+        continue;
+      }
+
+      if (today.day < item.day) {
+        continue;
+      }
+
+      final dueDate = DateTime(
+        today.year,
+        today.month,
+        item.day.clamp(
+          1,
+          DateTime(
+            today.year,
+            today.month + 1,
+            0,
+          ).day,
+        ),
+      );
+
+      final month =
+          DateFormat('yyyy-MM').format(dueDate);
+
+      final existing =
+          await DB.allTransactions();
+
+      final alreadyCreated = existing.any(
+        (t) =>
+            t.source == 'Recurring' &&
+            t.category == item.category &&
+            t.description ==
+                'Recurring: ${item.name}' &&
+            t.date.startsWith(month),
+      );
+
+      if (!alreadyCreated) {
+        await DB.insertTransaction(
+          TransactionModel(
+            amount: item.amount,
+            type: 'Expense',
+            account: item.account,
+            category: item.category,
+            subCategory: 'Recurring',
+            date: DateFormat(
+              'yyyy-MM-dd HH:mm',
+            ).format(dueDate),
+            description:
+                'Recurring: ${item.name}',
+            source: 'Recurring',
+          ),
+        );
+      }
+    }
+  }
+
+  // ==========================================================
+  // FILTER
+  // ==========================================================
+
+  void applyFilters() {
+    final now = DateTime.now();
+
+    shown = data.where((transaction) {
+      final date =
+          DateTime.tryParse(transaction.date) ??
+              now;
+
+      if (accountFilter != 'All' &&
+          transaction.account !=
+              accountFilter) {
+        return false;
+      }
+
+      if (selectedDates != null) {
+        final start =
+            DateTime(
+              selectedDates!.start.year,
+              selectedDates!.start.month,
+              selectedDates!.start.day,
+            );
+
+        final end =
+            DateTime(
+              selectedDates!.end.year,
+              selectedDates!.end.month,
+              selectedDates!.end.day,
+              23,
+              59,
+              59,
+            );
+
+        if (date.isBefore(start) ||
+            date.isAfter(end)) {
+          return false;
+        }
+      } else {
+        if (period == 'Daily' &&
+            !transaction.date.startsWith(
+              DateFormat(
+                'yyyy-MM-dd',
+              ).format(now),
+            )) {
+          return false;
+        }
+
+        if (period == 'Monthly' &&
+            !transaction.date.startsWith(
+              DateFormat(
+                'yyyy-MM',
+              ).format(now),
+            )) {
+          return false;
+        }
+
+        if (period == 'Yearly' &&
+            !transaction.date.startsWith(
+              DateFormat(
+                'yyyy',
+              ).format(now),
+            )) {
+          return false;
+        }
+      }
+
+      if (search.isNotEmpty) {
+        final text = [
+          transaction.category,
+          transaction.subCategory,
+          transaction.description,
+          transaction.account,
+          transaction.bank ?? '',
+          transaction.merchant ?? '',
+          transaction.reference ?? '',
+        ].join(' ').toLowerCase();
+
+        if (!text.contains(search.toLowerCase())) {
+          return false;
+        }
+      }
+
+      return true;
+    }).toList();
+  }
+
+  double total(String type) {
+    return shown
+        .where((t) => t.type == type)
+        .fold(
+          0.0,
+          (sum, t) => sum + t.amount,
+        );
+  }
+
+  double monthlyTotal(String type) {
+    final month =
+        DateFormat('yyyy-MM').format(DateTime.now());
+
+    return data
+        .where(
+          (t) =>
+              t.type == type &&
+              t.date.startsWith(month),
+        )
+        .fold(
+          0.0,
+          (sum, t) => sum + t.amount,
+        );
+  }
+
+  // ==========================================================
+  // ADD / EDIT TRANSACTION
+  // ==========================================================
+
+  Future<void> editTransaction(
+    [TransactionModel? old],
+  ) async {
+    final amountController =
+        TextEditingController(
+      text: old?.amount.toString() ?? '',
+    );
+
+    final descriptionController =
+        TextEditingController(
+      text: old?.description ?? '',
+    );
+
+    final subController =
+        TextEditingController(
+      text: old?.subCategory ?? '',
+    );
+
+    String type =
+        old?.type ?? 'Expense';
+
+    String account =
+        old?.account ?? 'Cash';
+
+    String toAccount =
+        old?.toAccount ?? 'Bank Account';
+
+    String category =
+        old?.category ?? 'Other';
+
+    List<String> categoryList =
+        await DB.categories(type);
+
+    if (!categoryList.contains(category)) {
+      category = categoryList.first;
+    }
+
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (
+            context,
+            setModalState,
+          ) {
+            return Padding(
+              padding: EdgeInsets.fromLTRB(
+                16,
+                16,
+                16,
+                MediaQuery.of(context)
+                        .viewInsets
+                        .bottom +
+                    16,
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  children: [
+                    Text(
+                      old == null
+                          ? 'Add Transaction'
+                          : 'Edit Transaction',
+                      style: const TextStyle(
+                        fontSize: 22,
+                        fontWeight:
+                            FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+
+                    DropdownButtonFormField<String>(
+                      value: type,
+                      decoration:
+                          const InputDecoration(
+                        labelText: 'Type',
+                        border:
+                            OutlineInputBorder(),
+                      ),
+                      items: types
+                          .map(
+                            (value) =>
+                                DropdownMenuItem(
+                              value: value,
+                              child: Text(value),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: (value) async {
+                        if (value == null) return;
+
+                        final list =
+                            await DB.categories(
+                          value,
+                        );
+
+                        setModalState(() {
+                          type = value;
+                          category = list.first;
+                          categoryList = list;
+                        });
+                      },
+                    ),
+
+                    const SizedBox(height: 10),
+
+                    DropdownButtonFormField<String>(
+                      value: account,
+                      decoration:
+                          const InputDecoration(
+                        labelText: 'Account',
+                        border:
+                            OutlineInputBorder(),
+                      ),
+                      items: accounts
+                          .map(
+                            (value) =>
+                                DropdownMenuItem(
+                              value: value,
+                              child: Text(value),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: (value) {
+                        if (value == null) return;
+
+                        setModalState(() {
+                          account = value;
+
+                          if (toAccount ==
+                              account) {
+                            toAccount =
+                                accounts.firstWhere(
+                              (x) =>
+                                  x != account,
+                              orElse: () =>
+                                  'Bank Account',
+                            );
+                          }
+                        });
+                      },
+                    ),
+
+                    if (type == 'Transfer') ...[
+                      const SizedBox(height: 10),
+                      DropdownButtonFormField<String>(
+                        value: toAccount,
+                        decoration:
+                            const InputDecoration(
+                          labelText:
+                              'Transfer To',
+                          border:
+                              OutlineInputBorder(),
+                        ),
+                        items: accounts
+                            .where(
+                              (x) =>
+                                  x != account,
+                            )
+                            .map(
+                              (value) =>
+                                  DropdownMenuItem(
+                                value: value,
+                                child:
+                                    Text(value),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: (value) {
+                          if (value == null) {
+                            return;
+                          }
+
+                          setModalState(() {
+                            toAccount = value;
+                          });
+                        },
+                      ),
+                    ],
+
+                    if (type != 'Transfer') ...[
+                      const SizedBox(height: 10),
+                      DropdownButtonFormField<String>(
+                        value: category,
+                        decoration:
+                            const InputDecoration(
+                          labelText: 'Category',
+                          border:
+                              OutlineInputBorder(),
+                        ),
+                        items: categoryList
+                            .map(
+                              (value) =>
+                                  DropdownMenuItem(
+                                value: value,
+                                child:
+                                    Text(value),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: (value) {
+                          if (value == null) {
+                            return;
+                          }
+
+                          setModalState(() {
+                            category = value;
+                          });
+                        },
+                      ),
+                    ],
+
+                    const SizedBox(height: 10),
+
+                    TextField(
+                      controller: subController,
+                      decoration:
+                          const InputDecoration(
+                        labelText:
+                            'Sub-category',
+                        border:
+                            OutlineInputBorder(),
+                      ),
+                    ),
+
+                    const SizedBox(height: 10),
+
+                    TextField(
+                      controller:
+                          amountController,
+                      keyboardType:
+                          const TextInputType
+                              .numberWithOptions(
+                        decimal: true,
+                      ),
+                      decoration:
+                          const InputDecoration(
+                        labelText: 'Amount ₹',
+                        border:
+                            OutlineInputBorder(),
+                      ),
+                    ),
+
+                    const SizedBox(height: 10),
+
+                    TextField(
+                      controller:
+                          descriptionController,
+                      decoration:
+                          const InputDecoration(
+                        labelText:
+                            'Description',
+                        border:
+                            OutlineInputBorder(),
+                      ),
+                    ),
+
+                    const SizedBox(height: 16),
+
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        onPressed: () async {
+                          final amount =
+                              double.tryParse(
+                            amountController.text
+                                .trim(),
+                          ) ??
+                                  0;
+
+                          if (amount <= 0) {
+                            return;
+                          }
+
+                          final transaction =
+                              TransactionModel(
+                            id: old?.id,
+                            amount: amount,
+                            type: type,
+                            account: account,
+                            toAccount:
+                                type == 'Transfer'
+                                    ? toAccount
+                                    : null,
+                            category:
+                                type == 'Transfer'
+                                    ? 'Account Transfer'
+                                    : category,
+                            subCategory:
+                                subController.text
+                                    .trim(),
+                            date: old?.date ??
+                                DateFormat(
+                                  'yyyy-MM-dd HH:mm',
+                                ).format(
+                                  DateTime.now(),
+                                ),
+                            description:
+                                descriptionController
+                                    .text
+                                    .trim(),
+                            source: old?.source,
+                            bank: old?.bank,
+                            merchant:
+                                old?.merchant,
+                            reference:
+                                old?.reference,
+                          );
+
+                          if (old == null) {
+                            await DB
+                                .insertTransaction(
+                              transaction,
+                            );
+                          } else {
+                            await DB
+                                .updateTransaction(
+                              transaction,
+                            );
+                          }
+
+                          if (sheetContext.mounted) {
+                            Navigator.pop(
+                              sheetContext,
+                            );
+                          }
+
+                          await load();
+                        },
+                        child: Text(
+                          old == null
+                              ? 'Save Transaction'
+                              : 'Update Transaction',
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  // ==========================================================
+  // CATEGORY
+  // ==========================================================
+
+  Future<void>categoryDialog() async {
+    final nameController =
+        TextEditingController();
+
+    String type = 'Expense';
+
+    await showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text(
+            'Add Manual Category',
+          ),
+          content: StatefulBuilder(
+            builder: (
+              context,
+              setDialogState,
+            ) {
+              return Column(
+                mainAxisSize:
+                    MainAxisSize.min,
+                children: [
+                  DropdownButtonFormField<String>(
+                    value: type,
+                    items: types
+                        .where(
+                          (x) => x != 'Transfer',
+                        )
+                        .map(
+                          (x) =>
+                              DropdownMenuItem(
+                            value: x,
+                            child: Text(x),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (value) {
+                      if (value == null) return;
+
+                      setDialogState(() {
+                        type = value;
+                      });
+                    },
+                  ),
+                  TextField(
+                    controller:
+                        nameController,
+                    decoration:
+                        const InputDecoration(
+                      labelText: 'Category Name',
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () async {
+                if (nameController.text
+                    .trim()
+                    .isEmpty) {
+                  return;
+                }
+
+                await DB.addCategory(
+                  nameController.text.trim(),
+                  type,
+                );
+
+                if (dialogContext.mounted) {
+                  Navigator.pop(
+                    dialogContext,
+                  );
+                }
+
+                await load();
+              },
+              child: const Text('Save'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  // ==========================================================
+  // OPENING BALANCES
+  // ==========================================================
+
+  Future<void>openingBalancesDialog() async {
+    for (final account in accounts) {
+      final controller =
+          TextEditingController(
+        text:
+            (await DB.openingBalance(account))
+                .toStringAsFixed(2),
+      );
+
+      if (!mounted) return;
+
+      await showDialog(
+        context: context,
+        builder: (dialogContext) {
+          return AlertDialog(
+            title: Text(
+              '$account Opening Balance',
+            ),
+            content: TextField(
+              controller: controller,
+              keyboardType:
+                  const TextInputType.numberWithOptions(
+                decimal: true,
+              ),
+              decoration:
+                  const InputDecoration(
+                prefixText: '₹ ',
+              ),
+            ),
+            actions: [
+              ElevatedButton(
+                onPressed: () async {
+                  final value =
+                      double.tryParse(
+                            controller.text,
+                          ) ??
+                          0;
+
+                  await DB.setOpeningBalance(
+                    account,
+                    value,
+                  );
+
+                  if (dialogContext.mounted) {
+                    Navigator.pop(
+                      dialogContext,
+                    );
+                  }
+                },
+                child: const Text('Save'),
+              ),
+            ],
+          );
+        },
+      );
+    }
+
+    await load();
+  }
+
+  // ==========================================================
+  // BUDGET
+  // ==========================================================
+
+  Future<void>budgetDialog() async {
+    final categories =
+        await DB.categories('Expense');
+
+    if (categories.isEmpty) return;
+
+    String category = categories.first;
+
+    final controller =
+        TextEditingController(
+      text:
+          (budgets[category] ?? 0)
+              .toStringAsFixed(0),
+    );
+
+    await showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (
+            context,
+            setDialogState,
+          ) {
+            return AlertDialog(
+              title: const Text(
+                'Monthly Budget',
+              ),
+              content: Column(
+                mainAxisSize:
+                    MainAxisSize.min,
+                children: [
+                  DropdownButtonFormField<String>(
+                    value: category,
+                    items: categories
+                        .map(
+                          (x) =>
+                              DropdownMenuItem(
+                            value: x,
+                            child: Text(x),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (value) {
+                      if (value == null) return;
+
+                      setDialogState(() {
+                        category = value;
+                        controller.text =
+                            (budgets[category] ??
+                                    0)
+                                .toStringAsFixed(
+                                    0);
+                      });
+                    },
+                  ),
+                  TextField(
+                    controller: controller,
+                    keyboardType:
+                        const TextInputType
+                            .numberWithOptions(
+                      decimal: true,
+                    ),
+                    decoration:
+                        const InputDecoration(
+                      labelText:
+                          'Monthly Budget ₹',
+                    ),
+                  ),
+                ],
+              ),
+              actions: [
+                ElevatedButton(
+                  onPressed: () async {
+                    final amount =
+                        double.tryParse(
+                              controller
+                                  .text,
+                            ) ??
+                            0;
+
+                    await DB.setBudget(
+                      DateFormat(
+                        'yyyy-MM',
+                      ).format(
+                        DateTime.now(),
+                      ),
+                      category,
+                      amount,
+                    );
+
+                    if (dialogContext.mounted) {
+                      Navigator.pop(
+                        dialogContext,
+                      );
+                    }
+
+                    await load();
+                  },
+                  child: const Text('Save'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  // ==========================================================
+  // RECURRING
+  // ==========================================================
+
+  Future<void>recurringDialog() async {
+    final name =
+        TextEditingController();
+
+    final amount =
+        TextEditingController();
+
+    final day =
+        TextEditingController(text: '1');
+
+    final category =
+        TextEditingController(
+      text: 'Bills',
+    );
+
+    String account = 'Bank Account';
+
+    String frequency = 'Monthly';
+
+    await showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (
+            context,
+            setDialogState,
+          ) {
+            return AlertDialog(
+              title: const Text(
+                'Recurring Expense',
+              ),
+              content:
+                  SingleChildScrollView(
+                child: Column(
+                  children: [
+                    TextField(
+                      controller: name,
+                      decoration:
+                          const InputDecoration(
+                        labelText:
+                            'Name / Description',
+                        hintText:
+                            'EMI, Rent, Electricity...',
+                      ),
+                    ),
+                    TextField(
+                      controller: amount,
+                      keyboardType:
+                          const TextInputType
+                              .numberWithOptions(
+                        decimal: true,
+                      ),
+                      decoration:
+                          const InputDecoration(
+                        labelText:
+                            'Amount ₹',
+                      ),
+                    ),
+                    TextField(
+                      controller: day,
+                      keyboardType:
+                          TextInputType.number,
+                      decoration:
+                          const InputDecoration(
+                        labelText:
+                            'Due Day',
+                        hintText:
+                            '1 - 31',
+                      ),
+                    ),
+                    DropdownButtonFormField<String>(
+                      value: account,
+                      items: accounts
+                          .map(
+                            (x) =>
+                                DropdownMenuItem(
+                              value: x,
+                              child: Text(x),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: (value) {
+                        if (value == null) {
+                          return;
+                        }
+
+                        setDialogState(() {
+                          account = value;
+                        });
+                      },
+                    ),
+                    DropdownButtonFormField<String>(
+                      value: frequency,
+                      items: const [
+                        DropdownMenuItem(
+                          value: 'Monthly',
+                          child:
+                              Text('Monthly'),
+                        ),
+                      ],
+                      onChanged: (value) {
+                        if (value == null) {
+                          return;
+                        }
+
+                        setDialogState(() {
+                          frequency = value;
+                        });
+                      },
+                    ),
+                    TextField(
+                      controller: category,
+                      decoration:
+                          const InputDecoration(
+                        labelText:
+                            'Category',
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                ElevatedButton(
+                  onPressed: () async {
+                    final amountValue =
+                        double.tryParse(
+                              amount.text,
+                            ) ??
+                            0;
+
+                    final dayValue =
+                        int.tryParse(
+                              day.text,
+                            ) ??
+                            1;
+
+                    if (name.text
+                            .trim()
+                            .isEmpty ||
+                        amountValue <= 0) {
+                      return;
+                    }
+
+                    await DB.addRecurring(
+                      RecurringExpense(
+                        name:
+                            name.text.trim(),
+                        account: account,
+                        category:
+                            category.text.trim(),
+                        amount: amountValue,
+                        day: dayValue
+                            .clamp(1, 31),
+                        frequency:
+                            frequency,
+                      ),
+                    );
+
+                    if (dialogContext.mounted) {
+                      Navigator.pop(
+                        dialogContext,
+                      );
+                    }
+
+                    await load();
+                  },
+                  child: const Text(
+                    'Save Recurring',
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  // ==========================================================
+  // DATE RANGE
+  // ==========================================================
+
+  Future<void>pickDateRange() async {
+    final range =
+        await showDateRangePicker(
+      context: context,
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2100),
+      initialDateRange:
+          selectedDates,
+    );
+
+    if (range != null) {
+      setState(() {
+        selectedDates = range;
+      });
+
+      applyFilters();
+    }
+  }
+
+  // ==========================================================
+  // SMS AUTOMATION
+  // ==========================================================
+
+  String detectBank(String body) {
+    final text = body.toLowerCase();
+
+    final banks = <String, List<String>>{
+      'SBI': [
+        'sbi',
+        'state bank',
+        'sbicard',
+      ],
+      'HDFC': [
+        'hdfc',
+      ],
+      'ICICI': [
+        'icici',
+      ],
+      'Axis': [
+        'axis',
+      ],
+      'Kotak': [
+        'kotak',
+      ],
+      'Canara': [
+        'canara',
+      ],
+      'Federal Bank': [
+        'federal',
+      ],
+      'Bank of Baroda': [
+        'bank of baroda',
+        'bob',
+      ],
+      'PNB': [
+        'pnb',
+        'punjab national',
+      ],
+      'IDFC': [
+        'idfc',
+      ],
+      'IndusInd': [
+        'indusind',
+      ],
+      'Yes Bank': [
+        'yes bank',
+      ],
+    };
+
+    for (final entry in banks.entries) {
+      for (final word in entry.value) {
+        if (text.contains(word)) {
+          return entry.key;
+        }
+      }
+    }
+
+    return 'Unknown Bank';
+  }
+
+  String detectMerchant(String body) {
+    final text = body.toLowerCase();
+
+    final known = <String>[
+      'swiggy',
+      'zomato',
+      'amazon',
+      'flipkart',
+      'uber',
+      'ola',
+      'zepto',
+      'blinkit',
+      'myntra',
+      'netflix',
+      'spotify',
+      'google',
+      'apple',
+      'phonepe',
+      'gpay',
+      'google pay',
+      'paytm',
+    ];
+
+    for (final merchant in known) {
+      if (text.contains(merchant)) {
+        return merchant.toUpperCase();
+      }
+    }
+
+    return '';
+  }
+
+  String detectAccount(String body) {
+    final text = body.toLowerCase();
+
+    if (text.contains('credit card') ||
+        text.contains('card ending') ||
+        text.contains('card xx') ||
+        text.contains('card no')) {
+      return 'Credit Card';
+    }
+
+    return 'Bank Account';
+  }
+
+  String detectCategory(String body) {
+    final text = body.toLowerCase();
+
+    if (text.contains('swiggy') ||
+        text.contains('zomato') ||
+        text.contains('restaurant') ||
+        text.contains('food')) {
+      return 'Food';
+    }
+
+    if (text.contains('uber') ||
+        text.contains('ola') ||
+        text.contains('fuel') ||
+        text.contains('petrol') ||
+        text.contains('diesel')) {
+      return 'Travel';
+    }
+
+    if (text.contains('electricity') ||
+        text.contains('kseb') ||
+        text.contains('recharge') ||
+        text.contains('bill')) {
+      return 'Bills';
+    }
+
+    if (text.contains('school') ||
+        text.contains('college') ||
+        text.contains('education')) {
+      return 'Education';
+    }
+
+    if (text.contains('emi') ||
+        text.contains('loan')) {
+      return 'EMI';
+    }
+
+    if (text.contains('insurance')) {
+      return 'Insurance';
+    }
+
+    if (text.contains('netflix') ||
+        text.contains('spotify') ||
+        text.contains('subscription')) {
+      return 'Subscription';
+    }
+
+    return 'Other';
+  }
+
+  String detectUpi(String body) {
+    final match = RegExp(
+      r'(?i)(upi|vpa|upi ref|upi id)',
+    ).firstMatch(body);
+
+    return match == null ? '' : 'UPI';
+  }
+
+  Future<void>processSms() async {
+    final permission =
+        await Permission.sms.request();
+
+    if (!permission.isGranted) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(
+          const SnackBar(
+            content: Text(
+              'SMS permission is required',
+            ),
+          ),
+        );
+      }
+
+      return;
+    }
+
+    final smsQuery = SmsQuery();
+
+    final messages =
+        await smsQuery.querySms(
+      kinds: [
+        SmsQueryKind.inbox,
+      ],
+      count: 200,
+    );
+
+    final existing =
+        await DB.allTransactions();
+
+    int added = 0;
+    int skipped = 0;
+
+    final amountRegex = RegExp(
+      r'(?:debited|debit|spent|paid|withdrawn|credited|credit|received|sent)'
+      r'\D{0,40}'
+      r'(?:rs\.?|inr|₹)?\s*'
+      r'([0-9,]+(?:\.[0-9]+)?)',
+      caseSensitive: false,
+    );
+
+    for (final message in messages) {
+      final body =
+          message.body?.trim() ?? '';
+
+      if (body.isEmpty) continue;
+
+      final match =
+          amountRegex.firstMatch(body);
+
+      if (match == null) continue;
+
+      final amount =
+          double.tryParse(
+                match.group(1)!
+                    .replaceAll(',', ''),
+              ) ??
+              0;
+
+      if (amount <= 0) continue;
+
+      final lower = body.toLowerCase();
+
+      final isIncome =
+          lower.contains('credited') ||
+              lower.contains('received') ||
+              lower.contains('credit');
+
+      final date =
+          message.date ?? DateTime.now();
+
+      final dateString =
+          DateFormat(
+            'yyyy-MM-dd HH:mm',
+          ).format(date);
+
+      final bank =
+          detectBank(body);
+
+      final merchant =
+          detectMerchant(body);
+
+      final account =
+          detectAccount(body);
+
+      final category =
+          detectCategory(body);
+
+      final upi =
+          detectUpi(body);
+
+      final reference =
+          RegExp(
+            r'(?i)(?:utr|ref(?:erence)?|txn|transaction)[\s:#-]*([A-Za-z0-9]+)',
+          ).firstMatch(body)?.group(1);
+
+      final duplicate =
+          existing.any(
+        (t) =>
+            t.source == 'SMS' &&
+            t.date == dateString &&
+            (t.amount - amount)
+                    .abs() <
+                0.01 &&
+            (t.reference == reference ||
+                reference == null ||
+                t.description ==
+                    'SMS: $body'),
+      );
+
+      if (duplicate) {
+        skipped++;
+        continue;
+      }
+
+      final result =
+          await showDialog<String>(
+        context: context,
+        builder: (dialogContext) {
+          return AlertDialog(
+            title: const Text(
+              'SMS Transaction Detected',
+            ),
+            content:
+                SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment:
+                    CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Amount: ₹${amount.toStringAsFixed(2)}',
+                  ),
+                  Text(
+                    'Type: ${isIncome ? 'Credit' : 'Debit'}',
+                  ),
+                  Text(
+                    'Bank: $bank',
+                  ),
+                  Text(
+                    'Account: $account',
+                  ),
+                  if (merchant.isNotEmpty)
+                    Text(
+                      'Merchant: $merchant',
+                    ),
+                  if (upi.isNotEmpty)
+                    Text(
+                      'Mode: $upi',
+                    ),
+                  Text(
+                    'Date: $dateString',
+                  ),
+                  const Divider(),
+                  Text(body),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () =>
+                    Navigator.pop(
+                  dialogContext,
+                  'skip',
+                ),
+                child: const Text(
+                  'Skip',
+                ),
+              ),
+              TextButton(
+                onPressed: () =>
+                    Navigator.pop(
+                  dialogContext,
+                  'edit',
+                ),
+                child: const Text(
+                  'Edit',
+                ),
+              ),
+              ElevatedButton(
+                onPressed: () =>
+                    Navigator.pop(
+                  dialogContext,
+                  'add',
+                ),
+                child: const Text(
+                  'Add',
+                ),
+              ),
+            ],
+          );
+        },
+      );
+
+      if (result == 'skip') {
+        skipped++;
+        continue;
+      }
+
+      if (result == 'edit') {
+        await editSmsTransaction(
+          amount: amount,
+          isIncome: isIncome,
+          account: account,
+          category: category,
+          date: dateString,
+          body: body,
+          bank: bank,
+          merchant: merchant,
+          reference: reference,
+        );
+
+        added++;
+        continue;
+      }
+
+      if (result == 'add') {
+        await DB.insertTransaction(
+          TransactionModel(
+            amount: amount,
+            type:
+                isIncome ? 'Income' : 'Expense',
+            account: account,
+            category: category,
+            subCategory:
+                upi.isNotEmpty ? 'UPI' : '',
+            date: dateString,
+            description:
+                merchant.isNotEmpty
+                    ? '$merchant | SMS: $body'
+                    : 'SMS: $body',
+            bank: bank,
+            merchant: merchant,
+            reference: reference,
+            source: 'SMS',
+          ),
+        );
+
+        added++;
+      }
+    }
+
+    await load();
+
+    if (mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(
+        SnackBar(
+          content: Text(
+            '$added added • $skipped skipped/duplicate',
+          ),
+        ),
+      );
+    }
+  }
+
+  Future<void>editSmsTransaction({
+    required double amount,
+    required bool isIncome,
+    required String account,
+    required String category,
+    required String date,
+    required String body,
+    required String bank,
+    required String merchant,
+    String? reference,
+  }) async {
+    final amountController =
+        TextEditingController(
+      text: amount.toStringAsFixed(2),
+    );
+
+    final descriptionController =
+        TextEditingController(
+      text: merchant.isNotEmpty
+          ? merchant
+          : body,
+    );
+
+    String selectedCategory =
+        category;
+
+    String selectedAccount =
+        account;
+
+    final categories =
+        await DB.categories(
+      isIncome ? 'Income' : 'Expense',
+    );
+
+    if (!categories.contains(
+      selectedCategory,
+    )) {
+      selectedCategory =
+          categories.first;
+    }
+
+    await showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (
+            context,
+            setDialogState,
+          ) {
+            return AlertDialog(
+              title: const Text(
+                'Edit SMS Transaction',
+              ),
+              content:
+                  SingleChildScrollView(
+                child: Column(
+                  children: [
+                    TextField(
+                      controller:
+                          amountController,
+                      keyboardType:
+                          const TextInputType
+                              .numberWithOptions(
+                        decimal: true,
+                      ),
+                      decoration:
+                          const InputDecoration(
+                        labelText: 'Amount',
+                      ),
+                    ),
+                    DropdownButtonFormField<String>(
+                      value:
+                          selectedAccount,
+                      items: accounts
+                          .map(
+                            (x) =>
+                                DropdownMenuItem(
+                              value: x,
+                              child: Text(x),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: (value) {
+                        if (value == null) {
+                          return;
+                        }
+
+                        setDialogState(() {
+                          selectedAccount =
+                              value;
+                        });
+                      },
+                    ),
+                    DropdownButtonFormField<String>(
+                      value:
+                          selectedCategory,
+                      items: categories
+                          .map(
+                            (x) =>
+                                DropdownMenuItem(
+                              value: x,
+                              child: Text(x),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: (value) {
+                        if (value == null) {
+                          return;
+                        }
+
+                        setDialogState(() {
+                          selectedCategory =
+                              value;
+                        });
+                      },
+                    ),
+                    TextField(
+                      controller:
+                          descriptionController,
+                      decoration:
+                          const InputDecoration(
+                        labelText:
+                            'Description',
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () =>
+                      Navigator.pop(
+                    dialogContext,
+                  ),
+                  child:
+                      const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: () async {
+                    final value =
+                        double.tryParse(
+                              amountController
+                                  .text,
+                            ) ??
+                            0;
+
+                    if (value <= 0) {
+                      return;
+                    }
+
+                    await DB
+                        .insertTransaction(
+                      TransactionModel(
+                        amount: value,
+                        type: isIncome
+                            ? 'Income'
+                            : 'Expense',
+                        account:
+                            selectedAccount,
+                        category:
+                            selectedCategory,
+                        subCategory: '',
+                        date: date,
+                        description:
+                            descriptionController
+                                .text,
+                        bank: bank,
+                        merchant: merchant,
+                        reference:
+                            reference,
+                        source: 'SMS',
+                      ),
+                    );
+
+                    if (dialogContext.mounted) {
+                      Navigator.pop(
+                        dialogContext,
+                      );
+                    }
+                  },
+                  child:
+                      const Text('Save'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  // ==========================================================
+  // EXCEL
+  // ==========================================================
+
+  Future<void>exportExcel() async {
+    final excel =
+        ex.Excel.createExcel();
+
+    final sheet =
+        excel['Transactions'];
+
+    sheet.appendRow([
+      ex.TextCellValue('Date'),
+      ex.TextCellValue('Type'),
+      ex.TextCellValue('Account'),
+      ex.TextCellValue('To Account'),
+      ex.TextCellValue('Category'),
+      ex.TextCellValue('Sub-category'),
+      ex.TextCellValue('Amount'),
+      ex.TextCellValue('Description'),
+      ex.TextCellValue('Bank'),
+      ex.TextCellValue('Merchant'),
+      ex.TextCellValue('Reference'),
+      ex.TextCellValue('Source'),
+    ]);
+
+    for (final t in data) {
+      sheet.appendRow([
+        ex.TextCellValue(t.date),
+        ex.TextCellValue(t.type),
+        ex.TextCellValue(t.account),
+        ex.TextCellValue(
+          t.toAccount ?? '',
+        ),
+        ex.TextCellValue(t.category),
+        ex.TextCellValue(
+          t.subCategory,
+        ),
+        ex.DoubleCellValue(t.amount),
+        ex.TextCellValue(
+          t.description,
+        ),
+        ex.TextCellValue(
+          t.bank ?? '',
+        ),
+        ex.TextCellValue(
+          t.merchant ?? '',
+        ),
+        ex.TextCellValue(
+          t.reference ?? '',
+        ),
+        ex.TextCellValue(
+          t.source ?? 'Manual',
+        ),
+      ]);
+    }
+
+    final bytes = excel.encode();
+
+    if (bytes == null) return;
+
+    final directory =
+        await FilePicker.platform
+            .getDirectoryPath();
+
+    if (directory == null) return;
+
+    final file = File(
+      p.join(
+        directory,
+        'expense_tracker_report.xlsx',
+      ),
+    );
+
+    await file.writeAsBytes(bytes);
+
+    if (mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(
+        SnackBar(
+          content: Text(
+            'Excel saved: ${file.path}',
+          ),
+        ),
+      );
+    }
+  }
+
+  // ==========================================================
+  // PDF
+  // ==========================================================
+
+  Future<void>exportPdf() async {
+    final document = pw.Document();
+
+    final income =
+        monthlyTotal('Income');
+
+    final expenses =
+        monthlyTotal('Expense');
+
+    final savings =
+        monthlyTotal('Savings');
+
+    final credit =
+        monthlyTotal('Credit');
+
+    final month =
+        DateFormat('MMMM yyyy')
+            .format(DateTime.now());
+
+    document.addPage(
+      pw.MultiPage(
+        build: (context) {
+          return [
+            pw.Header(
+              level: 0,
+              child: pw.Text(
+                'Expense Tracker',
+              ),
+            ),
+            pw.Text(
+              'Monthly Financial Report - $month',
+            ),
+            pw.SizedBox(height: 12),
+            pw.Text(
+              'Income: ₹${income.toStringAsFixed(2)}',
+            ),
+            pw.Text(
+              'Expenses: ₹${expenses.toStringAsFixed(2)}',
+            ),
+            pw.Text(
+              'Savings: ₹${savings.toStringAsFixed(2)}',
+            ),
+            pw.Text(
+              'Credit / Loan Payments: ₹${credit.toStringAsFixed(2)}',
+            ),
+            pw.SizedBox(height: 15),
+            pw.TableHelper.fromTextArray(
+              headers: [
+                'Date',
+                'Type',
+                'Account',
+                'Category',
+                'Amount',
+              ],
+              data: data
+                  .where(
+                    (t) => t.date.startsWith(
+                      DateFormat(
+                        'yyyy-MM',
+                      ).format(
+                        DateTime.now(),
+                      ),
+                    ),
+                  )
+                  .map(
+                    (t) => [
+                      t.date,
+                      t.type,
+                      t.account,
+                      t.category,
+                      t.amount
+                          .toStringAsFixed(2),
+                    ],
+                  )
+                  .toList(),
+            ),
+          ];
+        },
+      ),
+    );
+
+    await Printing.layoutPdf(
+      onLayout: (_) => document.save(),
+    );
+  }
+
+  // ==========================================================
+  // PIN / SECURITY
+  // ==========================================================
+
+  Future<void>securitySettings() async {
+    final prefs =
+        await SharedPreferences.getInstance();
+
+    final pinController =
+        TextEditingController(
+      text: prefs.getString('pin') ?? '',
+    );
+
+    bool biometric =
+        prefs.getBool('biometric') ?? false;
+
+    int autoLock =
+        prefs.getInt('autoLockMinutes') ?? 0;
+
+    await showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (
+            context,
+            setDialogState,
+          ) {
+            return AlertDialog(
+              title: const Text(
+                'Security Settings',
+              ),
+              content:
+                  SingleChildScrollView(
+                child: Column(
+                  children: [
+                    TextField(
+                      controller:
+                          pinController,
+                      obscureText: true,
+                      maxLength: 6,
+                      keyboardType:
+                          TextInputType.number,
+                      decoration:
+                          const InputDecoration(
+                        labelText:
+                            'PIN (4-6 digits)',
+                      ),
+                    ),
+                    SwitchListTile(
+                      title: const Text(
+                        'Fingerprint / Biometric',
+                      ),
+                      value: biometric,
+                      onChanged: (value) async {
+                        if (value) {
+                          final auth =
+                              LocalAuthentication();
+
+                          bool supported = false;
+
+                          try {
+                            supported =
+                                await auth
+                                        .isDeviceSupported() ||
+                                    await auth
+                                        .canCheckBiometrics;
+                          } catch (_) {}
+
+                          if (!supported) {
+                            if (mounted) {
+                              ScaffoldMessenger.of(
+                                      context)
+                                  .showSnackBar(
+                                const SnackBar(
+                                  content: Text(
+                                    'Biometric authentication is not available',
+                                  ),
+                                ),
+                              );
+                            }
+                            return;
+                          }
+                        }
+
+                        setDialogState(() {
+                          biometric = value;
+                        });
+                      },
+                    ),
+                    DropdownButtonFormField<int>(
+                      value: autoLock,
+                      decoration:
+                          const InputDecoration(
+                        labelText:
+                            'Auto-lock',
+                      ),
+                      items: const [
+                        DropdownMenuItem(
+                          value: 0,
+                          child:
+                              Text('Disabled'),
+                        ),
+                        DropdownMenuItem(
+                          value: 1,
+                          child:
+                              Text('After 1 minute'),
+                        ),
+                        DropdownMenuItem(
+                          value: 5,
+                          child:
+                              Text('After 5 minutes'),
+                        ),
+                        DropdownMenuItem(
+                          value: 10,
+                          child:
+                              Text('After 10 minutes'),
+                        ),
+                        DropdownMenuItem(
+                          value: 30,
+                          child:
+                              Text('After 30 minutes'),
+                        ),
+                      ],
+                      onChanged: (value) {
+                        if (value == null) {
+                          return;
+                        }
+
+                        setDialogState(() {
+                          autoLock = value;
+                        });
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                ElevatedButton(
+                  onPressed: () async {
+                    final pin =
+                        pinController.text
+                            .trim();
+
+                    if (pin.isNotEmpty &&
+                        (pin.length < 4 ||
+                            pin.length > 6)) {
+                      return;
+                    }
+
+                    if (pin.isEmpty) {
+                      await prefs.remove(
+                        'pin',
+                      );
+                    } else {
+                      await prefs.setString(
+                        'pin',
+                        pin,
+                      );
+                    }
+
+                    await prefs.setBool(
+                      'biometric',
+                      biometric,
+                    );
+
+                    await prefs.setInt(
+                      'autoLockMinutes',
+                      autoLock,
+                    );
+
+                    if (dialogContext.mounted) {
+                      Navigator.pop(
+                        dialogContext,
+                      );
+                    }
+
+                    if (mounted) {
+                      ScaffoldMessenger.of(
+                              context)
+                          .showSnackBar(
+                        const SnackBar(
+                          content: Text(
+                            'Security settings saved',
+                          ),
+                        ),
+                      );
+                    }
+                  },
+                  child: const Text(
+                    'Save',
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  // ==========================================================
+  // DELETE
+  // ==========================================================
+
+  Future<void>deleteTransaction(
+    TransactionModel transaction,
+  ) async {
+    if (transaction.id == null) {
+      return;
+    }
+
+    final confirm =
+        await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text(
+            'Delete Transaction?',
+          ),
+          content: Text(
+            'Delete ₹${transaction.amount.toStringAsFixed(2)}?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () =>
+                  Navigator.pop(
+                context,
+                false,
+              ),
+              child:
+                  const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () =>
+                  Navigator.pop(
+                context,
+                true,
+              ),
+              child:
+                  const Text('Delete'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirm == true) {
+      await DB.deleteTransaction(
+        transaction.id!,
+      );
+
+      await load();
+    }
+  }
+
+  // ==========================================================
+  // UI
+  // ==========================================================
+
+  @override
+  Widget build(BuildContext context) {
+    final categoryTotals =
+        <String, double>{};
+
+    for (final transaction in shown.where(
+      (x) => x.type == 'Expense',
+    )) {
+      categoryTotals[
+              transaction.category] =
+          (categoryTotals[
+                      transaction.category] ??
+                  0) +
+              transaction.amount;
+    }
+
+    final income =
+        total('Income');
+
+    final expense =
+        total('Expense');
+
+    final savings =
+        total('Savings');
+
+    final credit =
+        total('Credit');
+
+    final creditOutstanding =
+        -(balances['Credit Card'] ?? 0);
+
+    final monthExpense =
+        monthlyTotal('Expense');
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text(
+          'Expense Tracker',
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        actions: [
+          IconButton(
+            tooltip:
+                'Scan Bank SMS',
+            onPressed: processSms,
+            icon: const Icon(
+              Icons.sms,
+            ),
+          ),
+          PopupMenuButton<String>(
+            onSelected: (value) {
+              if (value == 'category') {
+                categoryDialog();
+              }
+
+              if (value == 'opening') {
+                openingBalancesDialog();
+              }
+
+              if (value == 'budget') {
+                budgetDialog();
+              }
+
+              if (value == 'recurring') {
+                recurringDialog();
+              }
+
+              if (value == 'excel') {
+                exportExcel();
+              }
+
+              if (value == 'pdf') {
+                exportPdf();
+              }
+
+              if (value == 'security') {
+                securitySettings();
+              }
+            },
+            itemBuilder: (context) => const [
+              PopupMenuItem(
+                value: 'category',
+                child: Text(
+                  'Manual Categories',
+                ),
+              ),
+              PopupMenuItem(
+                value: 'opening',
+                child: Text(
+                  'Opening Balances',
+                ),
+              ),
+              PopupMenuItem(
+                value: 'budget',
+                child: Text(
+                  'Monthly Budget',
+                ),
+              ),
+              PopupMenuItem(
+                value: 'recurring',
+                child: Text(
+                  'Recurring Expenses',
+                ),
+              ),
+              PopupMenuItem(
+                value: 'excel',
+                child: Text(
+                  'Export Excel',
+                ),
+              ),
+              PopupMenuItem(
+                value: 'pdf',
+                child: Text(
+                  'Export PDF',
+                ),
+              ),
+              PopupMenuItem(
+                value: 'security',
+                child: Text(
+                  'Security / PIN',
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+
+      body: RefreshIndicator(
+        onRefresh: load,
+        child: ListView(
+          padding: const EdgeInsets.all(8),
+          children: [
+            // --------------------------------------------------
+            // PERIOD
+            // --------------------------------------------------
+
+            SingleChildScrollView(
+              scrollDirection:
+                  Axis.horizontal,
+              child: Row(
+                children: [
+                  for (final value in [
+                    'Daily',
+                    'Monthly',
+                    'Yearly',
+                    'All',
+                  ])
+                    Padding(
+                      padding:
+                          const EdgeInsets
+                              .only(
+                        right: 6,
+                      ),
+                      child: ChoiceChip(
+                        label:
+                            Text(value),
+                        selected:
+                            period == value &&
+                                selectedDates ==
+                                    null,
+                        onSelected: (_) {
+                          setState(() {
+                            period = value;
+                            selectedDates =
+                                null;
+                          });
+
+                          applyFilters();
+                        },
+                      ),
+                    ),
+                ],
+              ),
+            ),
+
+            // --------------------------------------------------
+            // SEARCH + DATE
+            // --------------------------------------------------
+
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    decoration:
+                        const InputDecoration(
+                      prefixIcon:
+                          Icon(Icons.search),
+                      hintText:
+                          'Search transactions',
+                    ),
+                    onChanged: (value) {
+                      search = value;
+                      applyFilters();
+                      setState(() {});
+                    },
+                  ),
+                ),
+                IconButton(
+                  tooltip:
+                      'Date range',
+                  onPressed:
+                      pickDateRange,
+                  icon: const Icon(
+                    Icons.date_range,
+                  ),
+                ),
+              ],
+            ),
+
+            // --------------------------------------------------
+            // ACCOUNT FILTER
+            // --------------------------------------------------
+
+            DropdownButtonFormField<String>(
+              value: accountFilter,
+              decoration:
+                  const InputDecoration(
+                labelText:
+                    'Account Filter',
+              ),
+              items: [
+                const DropdownMenuItem(
+                  value: 'All',
+                  child: Text('All Accounts'),
+                ),
+                ...accounts.map(
+                  (x) =>
+                      DropdownMenuItem(
+                    value: x,
+                    child: Text(x),
+                  ),
+                ),
+              ],
+              onChanged: (value) {
+                if (value == null) {
+                  return;
+                }
+
+                setState(() {
+                  accountFilter =
+                      value;
+                });
+
+                applyFilters();
+              },
+            ),
+
+            const SizedBox(height: 8),
+
+            // --------------------------------------------------
+            // SUMMARY
+            // --------------------------------------------------
+
+            Row(
+              children: [
+                Expanded(
+                  child: summaryCard(
+                    'Income',
+                    income,
+                    Colors.green,
+                  ),
+                ),
+                Expanded(
+                  child: summaryCard(
+                    'Expense',
+                    expense,
+                    Colors.red,
+                  ),
+                ),
+              ],
+            ),
+
+            Row(
+              children: [
+                Expanded(
+                  child: summaryCard(
+                    'Savings',
+                    savings,
+                    Colors.blue,
+                  ),
+                ),
+                Expanded(
+                  child: summaryCard(
+                    'Credit / Loan',
+                    credit,
+                    Colors.orange,
+                  ),
+                ),
+              ],
+            ),
+
+            // --------------------------------------------------
+            // ACCOUNT BALANCES
+            // --------------------------------------------------
+
+            const Padding(
+              padding:
+                  EdgeInsets.all(8),
+              child: Text(
+                'Accounts & Balances',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight:
+                      FontWeight.bold,
+                ),
+              ),
+            ),
+
+            for (final account
+                in accounts)
+              Card(
+                child: ListTile(
+                  leading: Icon(
+                    account ==
+                            'Cash'
+                        ? Icons.money
+                        : account ==
+                                'Bank Account'
+                            ? Icons
+                                .account_balance
+                            : Icons.credit_card,
+                  ),
+                  title:
+                      Text(account),
+                  trailing: Text(
+                    '₹${(balances[account] ?? 0).toStringAsFixed(2)}',
+                    style: TextStyle(
+                      fontWeight:
+                          FontWeight.bold,
+                      color: account ==
+                              'Credit Card'
+                          ? Colors.red
+                          : null,
+                    ),
+                  ),
+                ),
+              ),
+
+            // --------------------------------------------------
+            // CREDIT CARD OUTSTANDING
+            // --------------------------------------------------
+
+            Card(
+              color: Colors.red
+                  .withOpacity(0.08),
+              child: ListTile(
+                leading: const Icon(
+                  Icons.credit_card,
+                  color: Colors.red,
+                ),
+                title: const Text(
+                  'Credit Card Outstanding',
+                  style: TextStyle(
+                    fontWeight:
+                        FontWeight.bold,
+                  ),
+                ),
+                trailing: Text(
+                  '₹${creditOutstanding.clamp(0, double.infinity).toStringAsFixed(2)}',
+                  style:
+                      const TextStyle(
+                    color: Colors.red,
+                    fontWeight:
+                        FontWeight.bold,
+                    fontSize: 18,
+                  ),
+                ),
+              ),
+            ),
+
+            // --------------------------------------------------
+            // MONTHLY FINANCIAL SUMMARY
+            // --------------------------------------------------
+
+            Card(
+              child: Padding(
+                padding:
+                    const EdgeInsets.all(
+                  12,
+                ),
+                child: Column(
+                  crossAxisAlignment:
+                      CrossAxisAlignment
+                          .start,
+                  children: [
+                    const Text(
+                      'Monthly Financial Summary',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight:
+                            FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(
+                      height: 8,
+                    ),
+                    Text(
+                      'Income: ₹${monthlyTotal('Income').toStringAsFixed(2)}',
+                    ),
+                    Text(
+                      'Expenses: ₹${monthExpense.toStringAsFixed(2)}',
+                    ),
+                    Text(
+                      'Savings: ₹${monthlyTotal('Savings').toStringAsFixed(2)}',
+                    ),
+                    Text(
+                      'Credit / Loan: ₹${monthlyTotal('Credit').toStringAsFixed(2)}',
+                    ),
+                    const Divider(),
+                    Text(
+                      'Net Cash Flow: ₹${(monthlyTotal('Income') - monthExpense - monthlyTotal('Savings') - monthlyTotal('Credit')).toStringAsFixed(2)}',
+                      style:
+                          const TextStyle(
+                        fontWeight:
+                            FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+            // --------------------------------------------------
+            // INCOME VS EXPENSE
+            // --------------------------------------------------
+
+            Card(
+              child: Padding(
+                padding:
+                    const EdgeInsets.all(
+                  12,
+                ),
+                child: Column(
+                  children: [
+                    const Text(
+                      'Income vs Expense',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight:
+                            FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(
+                      height: 10,
+                    ),
+                    SizedBox(
+                      height: 220,
+                      child: BarChart(
+                        BarChartData(
+                          barGroups: [
+                            BarChartGroupData(
+                              x: 0,
+                              barRods: [
+                                BarChartRodData(
+                                  toY: income,
+                                  width: 35,
+                                ),
+                              ],
+                            ),
+                            BarChartGroupData(
+                              x: 1,
+                              barRods: [
+                                BarChartRodData(
+                                  toY: expense,
+                                  width: 35,
+                                ),
+                              ],
+                            ),
+                            BarChartGroupData(
+                              x: 2,
+                              barRods: [
+                                BarChartRodData(
+                                  toY: savings,
+                                  width: 35,
+                                ),
+                              ],
+                            ),
+                          ],
+                          titlesData:
+                              const FlTitlesData(
+                            bottomTitles:
+                                AxisTitles(
+                              sideTitles:
+                                  SideTitles(
+                                showTitles:
+                                    true,
+                                getTitlesWidget:
+                                    _barTitle,
+                              ),
+                            ),
+                            leftTitles:
+                                AxisTitles(
+                              sideTitles:
+                                  SideTitles(
+                                showTitles:
+                                    true,
+                              ),
+                            ),
+                            topTitles:
+                                AxisTitles(
+                              sideTitles:
+                                  SideTitles(
+                                showTitles:
+                                    false,
+                              ),
+                            ),
+                            rightTitles:
+                                AxisTitles(
+                              sideTitles:
+                                  SideTitles(
+                                showTitles:
+                                    false,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+            // --------------------------------------------------
+            // CATEGORY CHART
+            // --------------------------------------------------
+
+            if (categoryTotals.isNotEmpty)
+              Card(
+                child: Padding(
+                  padding:
+                      const EdgeInsets.all(
+                    12,
+                  ),
+                  child: Column(
+                    children: [
+                      const Text(
+                        'Category-wise Expense',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight:
+                              FontWeight.bold,
+                        ),
+                      ),
+                      SizedBox(
+                        height: 280,
+                        child: PieChart(
+                          PieChartData(
+                            sections:
+                                categoryTotals
+                                    .entries
+                                    .map(
+                              (entry) {
+                                return PieChartSectionData(
+                                  value:
+                                      entry.value,
+                                  title:
+                                      '${entry.key}\n₹${entry.value.toStringAsFixed(0)}',
+                                  radius:
+                                      90,
+                                  titleStyle:
+                                      const TextStyle(
+                                    fontSize:
+                                        10,
+                                    fontWeight:
+                                        FontWeight.bold,
+                                  ),
+                                );
+                              },
+                            ).toList(),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
+            // --------------------------------------------------
+            // BUDGET
+            // --------------------------------------------------
+
+            if (budgets.isNotEmpty)
+              Card(
+                child: Padding(
+                  padding:
+                      const EdgeInsets.all(
+                    12,
+                  ),
+                  child: Column(
+                    crossAxisAlignment:
+                        CrossAxisAlignment
+                            .start,
+                    children: [
+                      const Text(
+                        'Budget vs Actual',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight:
+                              FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(
+                        height: 8,
+                      ),
+                      ...budgets.entries
+                          .map(
+                        (entry) {
+                          final actual =
+                              data
+                                  .where(
+                                    (t) =>
+                                        t.type ==
+                                            'Expense' &&
+                                        t.category ==
+                                            entry.key &&
+                                        t.date.startsWith(
+                                          DateFormat(
+                                            'yyyy-MM',
+                                          ).format(
+                                            DateTime
+                                                .now(),
+                                          ),
+                                        ),
+                                  )
+                                  .fold(
+                                    0.0,
+                                    (sum, t) =>
+                                        sum +
+                                        t.amount,
+                                  );
+
+                          final remaining =
+                              entry.value -
+                                  actual;
+
+                          final exceeded =
+                              actual >
+                                  entry.value;
+
+                          final progress =
+                              entry.value <= 0
+                                  ? 0.0
+                                  : (actual /
+                                          entry.value)
+                                      .clamp(
+                                      0.0,
+                                      1.0,
+                                    );
+
+                          return Padding(
+                            padding:
+                                const EdgeInsets
+                                    .only(
+                              bottom: 12,
+                            ),
+                            child: Column(
+                              crossAxisAlignment:
+                                  CrossAxisAlignment
+                                      .start,
+                              children: [
+                                Row(
+                                  mainAxisAlignment:
+                                      MainAxisAlignment
+                                          .spaceBetween,
+                                  children: [
+                                    Text(
+                                      entry.key,
+                                      style:
+                                          const TextStyle(
+                                        fontWeight:
+                                            FontWeight.bold,
+                                      ),
+                                    ),
+                                    Text(
+                                      '₹${actual.toStringAsFixed(0)} / ₹${entry.value.toStringAsFixed(0)}',
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(
+                                  height: 5,
+                                ),
+                                LinearProgressIndicator(
+                                  value:
+                                      progress,
+                                ),
+                                const SizedBox(
+                                  height: 5,
+                                ),
+                                Text(
+                                  exceeded
+                                      ? '⚠ Budget exceeded by ₹${(-remaining).toStringAsFixed(0)}'
+                                      : 'Remaining: ₹${remaining.toStringAsFixed(0)}',
+                                  style:
+                                      TextStyle(
+                                    color: exceeded
+                                        ? Colors.red
+                                        : Colors.green,
+                                    fontWeight:
+                                        FontWeight.bold,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
+            // --------------------------------------------------
+            // RECURRING
+            // --------------------------------------------------
+
+            if (recurringItems.isNotEmpty)
+              Card(
+                child: ExpansionTile(
+                  title: const Text(
+                    'Recurring Expenses',
+                    style: TextStyle(
+                      fontWeight:
+                          FontWeight.bold,
+                    ),
+                  ),
+                  children:
+                      recurringItems.map(
+                    (item) {
+                      return ListTile(
+                        leading:
+                            const Icon(
+                          Icons.repeat,
+                        ),
+                        title:
+                            Text(item.name),
+                        subtitle: Text(
+                          '${item.category} • Day ${item.day} • ${item.account}',
+                        ),
+                        trailing: Row(
+                          mainAxisSize:
+                              MainAxisSize.min,
+                          children: [
+                            Text(
+                              '₹${item.amount.toStringAsFixed(0)}',
+                            ),
+                            if (item.id !=
+                                null)
+                              IconButton(
+                                onPressed:
+                                    () async {
+                                  await DB
+                                      .deleteRecurring(
+                                    item.id!,
+                                  );
+                                  await load();
+                                },
+                                icon:
+                                    const Icon(
+                                  Icons
+                                      .delete_outline,
+                                ),
+                              ),
+                          ],
+                        ),
+                      );
+                    },
+                  ).toList(),
+                ),
+              ),
+
+            // --------------------------------------------------
+            // TRANSACTIONS
+            // --------------------------------------------------
+
+            const Padding(
+              padding:
+                  EdgeInsets.all(8),
+              child: Text(
+                'Transactions',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight:
+                      FontWeight.bold,
+                ),
+              ),
+            ),
+
+            if (shown.isEmpty)
+              const Card(
+                child: Padding(
+                  padding:
+                      EdgeInsets.all(24),
+                  child: Center(
+                    child: Text(
+                      'No transactions found',
+                    ),
+                  ),
+                ),
+              ),
+
+            ...shown.map(
+              (transaction) {
+                final isIncome =
+                    transaction.type ==
+                        'Income';
+
+                final isTransfer =
+                    transaction.type ==
+                        'Transfer';
+
+                return Card(
+                  child: ListTile(
+                    leading: CircleAvatar(
+                      child: Icon(
+                        isTransfer
+                            ? Icons.swap_horiz
+                            : isIncome
+                                ? Icons
+                                    .arrow_downward
+                                : Icons
+                                    .arrow_upward,
+                      ),
+                    ),
+                    title: Text(
+                      isTransfer
+                          ? '${transaction.account} → ${transaction.toAccount}'
+                          : transaction
+                              .category,
+                      style:
+                          const TextStyle(
+                        fontWeight:
+                            FontWeight.bold,
+                      ),
+                    ),
+                    subtitle: Text(
+                      [
+                        transaction
+                            .subCategory,
+                        transaction.account,
+                        transaction.date,
+                        transaction
+                            .description,
+                        if (transaction
+                                .merchant
+                                ?.isNotEmpty ==
+                            true)
+                          transaction
+                              .merchant!,
+                        if (transaction
+                                .bank
+                                ?.isNotEmpty ==
+                            true)
+                          transaction.bank!,
+                      ].where(
+                        (x) =>
+                            x.isNotEmpty,
+                      ).join(' • '),
+                    ),
+                    isThreeLine: true,
+                    trailing:
+                        Row(
+                      mainAxisSize:
+                          MainAxisSize.min,
+                      children: [
+                        Text(
+                          '${isIncome ? '+' : '-'}₹${transaction.amount.toStringAsFixed(2)}',
+                          style:
+                              TextStyle(
+                            color: isIncome
+                                ? Colors.green
+                                : Colors.red,
+                            fontWeight:
+                                FontWeight.bold,
+                          ),
+                        ),
+                        PopupMenuButton<
+                            String>(
+                          onSelected:
+                              (value) {
+                            if (value ==
+                                'edit') {
+                              editTransaction(
+                                transaction,
+                              );
+                            }
+
+                            if (value ==
+                                'delete') {
+                              deleteTransaction(
+                                transaction,
+                              );
+                            }
+                          },
+                          itemBuilder:
+                              (context) =>
+                                  const [
+                            PopupMenuItem(
+                              value:
+                                  'edit',
+                              child:
+                                  Text(
+                                'Edit',
+                              ),
+                            ),
+                            PopupMenuItem(
+                              value:
+                                  'delete',
+                              child:
+                                  Text(
+                                'Delete',
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+
+      floatingActionButton:
+          FloatingActionButton.extended(
+        onPressed:
+            () => editTransaction(),
+        icon: const Icon(
+          Icons.add,
+        ),
+        label: const Text(
+          'Add Expense',
+        ),
+      ),
+    );
+  }
+
+  Widget summaryCard(
+    String title,
+    double amount,
+    Color color,
+  ) {
+    return Card(
+      child: Padding(
+        padding:
+            const EdgeInsets.all(12),
+        child: Column(
+          children: [
+            Text(
+              title,
+              style:
+                  const TextStyle(
+                fontSize: 12,
+              ),
+            ),
+            const SizedBox(
+              height: 5,
+            ),
+            Text(
+              '₹${amount.toStringAsFixed(0)}',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight:
+                    FontWeight.bold,
+                color: color,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static Widget _barTitle(
+    double value,
+    TitleMeta meta,
+  ) {
+    String text;
+
+    switch (value.toInt()) {
+      case 0:
+        text = 'Income';
+        break;
+      case 1:
+        text = 'Expense';
+        break;
+      case 2:
+        text = 'Savings';
+        break;
+      default:
+        text = '';
+    }
+
+    return SideTitleWidget(
+      axisSide: meta.axisSide,
+      child: Text(
+        text,
+        style:
+            const TextStyle(fontSize: 10),
+      ),
+    );
+  }
+}

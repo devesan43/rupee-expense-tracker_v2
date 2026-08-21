@@ -2,25 +2,34 @@ name: Build Flutter Android APK
 
 on:
   push:
-    branches: [ main, master ]
+    branches:
+      - main
+      - master
 
   pull_request:
-    branches: [ main, master ]
+    branches:
+      - main
+      - master
 
 jobs:
   build:
+    name: Build Release APK
     runs-on: ubuntu-latest
 
     steps:
+      # 1. Checkout source code
       - name: Checkout
         uses: actions/checkout@v5
 
+      # 2. Setup Java 17
       - name: Set up Java 17
         uses: actions/setup-java@v5
         with:
           distribution: zulu
           java-version: '17'
+          cache: gradle
 
+      # 3. Setup Flutter
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -28,27 +37,67 @@ jobs:
           channel: stable
           cache: true
 
+      # 4. Check Flutter installation
       - name: Flutter Doctor
         run: flutter doctor -v
 
-      - name: Install dependencies
+      # 5. Generate Android project
+      - name: Generate Android project
+        run: |
+          flutter create . \
+            --platforms=android \
+            --org com.expensetracker.app
+
+      # 6. Show generated Android project
+      - name: Verify Android project
+        run: |
+          echo "Android project generated:"
+          ls -la android
+          echo ""
+          echo "Gradle files:"
+          find android -maxdepth 3 -type f | sort
+
+      # 7. Get Flutter packages
+      - name: Get dependencies
         run: flutter pub get
 
-      - name: Clean build
+      # 8. Clean previous builds
+      - name: Flutter clean
         run: flutter clean
 
-      - name: Build Release APK
-        run: flutter build apk --release --no-tree-shake-icons
+      # 9. Get dependencies again after clean
+      - name: Get dependencies again
+        run: flutter pub get
 
+      # 10. Build release APK
+      - name: Build Release APK
+        run: |
+          flutter build apk \
+            --release \
+            --no-tree-shake-icons
+
+      # 11. Find generated APK
       - name: Find APK
         if: always()
         run: |
-          echo "Searching for APK files..."
+          echo "================================"
+          echo "APK FILES"
+          echo "================================"
+
           find . -type f -name "*.apk" -print
 
+          echo ""
+          echo "================================"
+          echo "BUILD DIRECTORY"
+          echo "================================"
+
+          find build -maxdepth 6 -type f 2>/dev/null | sort | head -300
+
+      # 12. Upload APK
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: ExpenseTracker-APK
-          path: build/app/outputs/flutter-apk/*.apk
+          path: |
+            build/app/outputs/flutter-apk/*.apk
           if-no-files-found: error

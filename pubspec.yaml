@@ -1,0 +1,26 @@
+name: rupee_expense_tracker
+description: "Rupee Expense Tracker V2"
+publish_to: 'none'
+version: 2.0.0+2
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+dependencies:
+  flutter:
+    sdk: flutter
+  sqflite: ^2.4.2
+  path: ^1.9.0
+  flutter_sms_inbox: ^1.0.3
+  permission_handler: ^11.4.0
+  intl: ^0.18.1
+  file_picker: ^8.3.7
+  fl_chart: ^0.69.0
+  excel: ^4.0.6
+  pdf: ^3.11.1
+  printing: ^5.13.4
+  local_auth: ^2.3.0
+  shared_preferences: ^2.3.3
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+flutter:
+  uses-material-design: true

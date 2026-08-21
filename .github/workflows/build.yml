@@ -5,7 +5,6 @@ on:
     branches:
       - main
       - master
-
   workflow_dispatch:
 
 jobs:
@@ -13,101 +12,35 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
-      - name: Checkout source
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
-          distribution: zulu
+          distribution: temurin
           java-version: '17'
-          cache: gradle
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.35.7'
           channel: stable
           cache: true
 
-      - name: Flutter doctor
-        run: flutter doctor -v
-
-      # Your repository does not contain Android files.
-      # Flutter generates the complete Android project here.
-      - name: Generate Android project
+      - name: Create Android project
         run: |
-          flutter create . \
-            --platforms=android \
-            --project-name=expense_tracker \
-            --org=com.expensetracker
+          if [ ! -d "android" ]; then
+            flutter create --platforms=android .
+          fi
 
-      # Add Android SMS permissions and application name.
-      - name: Configure Android SMS permissions
-        run: |
-          python3 <<'PY'
-          from pathlib import Path
-          import re
-
-          manifest = Path(
-              "android/app/src/main/AndroidManifest.xml"
-          )
-
-          text = manifest.read_text()
-
-          read_sms = '<uses-permission android:name="android.permission.READ_SMS" />'
-          receive_sms = '<uses-permission android:name="android.permission.RECEIVE_SMS" />'
-
-          if read_sms not in text:
-              text = text.replace(
-                  '<manifest xmlns:android="http://schemas.android.com/apk/res/android">',
-                  '<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n'
-                  f'    {read_sms}\n'
-                  f'    {receive_sms}'
-              )
-
-          manifest.write_text(text)
-
-          strings = Path(
-              "android/app/src/main/res/values/strings.xml"
-          )
-
-          if strings.exists():
-              s = strings.read_text()
-
-              if '<string name="app_name">' in s:
-                  s = re.sub(
-                      r'<string name="app_name">.*?</string>',
-                      '<string name="app_name">Expense Tracker</string>',
-                      s
-                  )
-              else:
-                  s = s.replace(
-                      '</resources>',
-                      '    <string name="app_name">Expense Tracker</string>\n'
-                      '</resources>'
-                  )
-
-              strings.write_text(s)
-          PY
-
-      - name: Get Flutter packages
+      - name: Get dependencies
         run: flutter pub get
 
-      - name: Check Flutter code
-        run: flutter analyze
-
-      - name: Build Release APK
+      - name: Build APK
         run: flutter build apk --release
 
-      - name: Rename APK
-        run: |
-          cp build/app/outputs/flutter-apk/app-release.apk \
-             build/app/outputs/flutter-apk/Expense-Tracker.apk
-
-      - name: Upload Expense Tracker APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Expense-Tracker-APK
-          path: build/app/outputs/flutter-apk/Expense-Tracker.apk
+          name: expense-tracker-apk
+          path: build/app/outputs/flutter-apk/app-release.apk

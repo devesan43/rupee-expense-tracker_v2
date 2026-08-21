@@ -27,55 +27,22 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Check Flutter
-        run: flutter doctor -v
-
-      - name: Get dependencies
+      - name: Install dependencies
         run: flutter pub get
 
-      - name: Clean Flutter
+      - name: Clean
         run: flutter clean
 
-      - name: Clean Gradle
-        run: |
-          rm -rf android/.gradle
-          rm -rf android/app/build
-          rm -rf build
-
-      - name: Set compileSdk 36
-        run: |
-          sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 36/' android/app/build.gradle
-          sed -i 's/compileSdkVersion flutter.compileSdkVersion/compileSdkVersion 36/' android/app/build.gradle
-
       - name: Build APK
-        run: |
-          flutter build apk \
-            --release \
-            --no-tree-shake-icons
+        run: flutter build apk --release --no-tree-shake-icons
 
-      - name: Locate APK
+      - name: Find APK
         if: always()
-        run: |
-          echo "======================================"
-          echo "APK FILES"
-          echo "======================================"
-          find . -type f -name "*.apk" -print
-
-          echo "======================================"
-          echo "BUILD DIRECTORY"
-          echo "======================================"
-          find build -type f 2>/dev/null | head -200
-
-          echo "======================================"
-          echo "ANDROID BUILD DIRECTORY"
-          echo "======================================"
-          find android/app/build -type f -name "*.apk" -print 2>/dev/null
+        run: find . -name "*.apk" -type f -print
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: ExpenseTracker-APK
-          path: |
-            build/app/outputs/flutter-apk/*.apk
-            android/app/build/outputs/apk/**/*.apk
+          path: build/app/outputs/flutter-apk/*.apk
           if-no-files-found: error

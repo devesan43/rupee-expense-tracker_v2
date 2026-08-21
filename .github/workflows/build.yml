@@ -1,43 +1,43 @@
-name: Build Expense Tracker APK
+name: expense_tracker
+description: Expense Tracker - Personal Finance Management App
+publish_to: "none"
 
-on:
-  workflow_dispatch:
-  push:
-    branches:
-      - main
+version: 1.0.0+1
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
+environment:
+  sdk: ">=3.4.0 <4.0.0"
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+dependencies:
+  flutter:
+    sdk: flutter
 
-      - name: Setup Java
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '17'
+  cupertino_icons: ^1.0.8
 
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-          cache: true
+  intl: ^0.20.2
 
-      - name: Generate Android project
-        run: |
-          flutter create --platforms=android .
+  shared_preferences: ^2.5.3
+  path_provider: ^2.1.5
 
-      - name: Flutter Pub Get
-        run: flutter pub get
+  fl_chart: ^1.0.0
 
-      - name: Build APK
-        run: flutter build apk --release
+  file_picker: ^10.3.3
 
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: expense-tracker
-          path: build/app/outputs/flutter-apk/app-release.apk
+  excel: ^4.0.6
+
+  pdf: ^3.11.3
+  printing: ^5.14.2
+
+  local_auth: ^2.3.0
+
+  flutter_sms_inbox: ^1.0.3
+
+  permission_handler: ^12.0.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

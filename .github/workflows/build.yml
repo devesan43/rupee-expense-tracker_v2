@@ -17,14 +17,14 @@ jobs:
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'zulu'
+          distribution: zulu
           java-version: '17'
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.35.7'
-          channel: 'stable'
+          channel: stable
           cache: true
 
       - name: Flutter doctor
@@ -33,22 +33,23 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Clean
+      - name: Clean Flutter
         run: flutter clean
 
       - name: Build APK
         run: flutter build apk --release --no-tree-shake-icons
 
-      - name: Find generated APK
+      - name: Locate APK
         if: always()
         run: |
-          echo "Searching for APK..."
+          echo "===== APK FILES ====="
           find . -type f -name "*.apk" -print
+          echo "===== BUILD DIRECTORY ====="
+          find build -type f 2>/dev/null | head -200
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ExpenseTracker-APK
-          path: |
-            build/app/outputs/flutter-apk/*.apk
+          path: build/app/outputs/flutter-apk/*.apk
           if-no-files-found: error

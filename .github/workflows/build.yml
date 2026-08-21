@@ -17,6 +17,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
       # 1. Checkout source code
       - name: Checkout
         uses: actions/checkout@v5
@@ -27,7 +28,6 @@ jobs:
         with:
           distribution: zulu
           java-version: '17'
-          cache: gradle
 
       # 3. Setup Flutter
       - name: Set up Flutter
@@ -37,7 +37,7 @@ jobs:
           channel: stable
           cache: true
 
-      # 4. Check Flutter installation
+      # 4. Check Flutter
       - name: Flutter Doctor
         run: flutter doctor -v
 
@@ -48,35 +48,36 @@ jobs:
             --platforms=android \
             --org com.expensetracker.app
 
-      # 6. Show generated Android project
+      # 6. Verify Android project
       - name: Verify Android project
         run: |
-          echo "Android project generated:"
+          echo "Android directory:"
           ls -la android
+
           echo ""
           echo "Gradle files:"
-          find android -maxdepth 3 -type f | sort
+          find android -type f | sort | head -200
 
-      # 7. Get Flutter packages
+      # 7. Get dependencies
       - name: Get dependencies
         run: flutter pub get
 
-      # 8. Clean previous builds
+      # 8. Clean
       - name: Flutter clean
         run: flutter clean
 
-      # 9. Get dependencies again after clean
-      - name: Get dependencies again
+      # 9. Get dependencies again
+      - name: Get dependencies after clean
         run: flutter pub get
 
-      # 10. Build release APK
+      # 10. Build APK
       - name: Build Release APK
         run: |
           flutter build apk \
             --release \
             --no-tree-shake-icons
 
-      # 11. Find generated APK
+      # 11. Find APK
       - name: Find APK
         if: always()
         run: |
@@ -98,6 +99,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ExpenseTracker-APK
-          path: |
-            build/app/outputs/flutter-apk/*.apk
+          path: build/app/outputs/flutter-apk/*.apk
           if-no-files-found: error

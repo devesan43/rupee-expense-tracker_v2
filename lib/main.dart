@@ -3435,7 +3435,8 @@ class _ExpenseTrackerHomeState
       case AccountType.loan:
         return Icons.request_quote;
     }
-  }  // ============================================================
+  } 
+    // ============================================================
   // EXPORT
   // ============================================================
 
@@ -3742,6 +3743,299 @@ class _LockScreenState
                       widget.onPin(
                         controller.text,
                       );
+  // ============================================================
+  // EXPORT
+  // ============================================================
+
+  Future<void> exportExcel() async {
+    try {
+      final workbook = ex.Excel.createExcel();
+
+      final sheet = workbook['Transactions'];
+
+      sheet.appendRow([
+        ex.TextCellValue('Date'),
+        ex.TextCellValue('Account'),
+        ex.TextCellValue('Type'),
+        ex.TextCellValue('Category'),
+        ex.TextCellValue('Sub-category'),
+        ex.TextCellValue('Merchant'),
+        ex.TextCellValue('Amount'),
+        ex.TextCellValue('Note'),
+      ]);
+
+      for (final transaction in transactions) {
+        final matchingAccounts = accounts.where(
+          (a) => a.id == transaction.accountId,
+        );
+
+        final account =
+            matchingAccounts.isNotEmpty
+                ? matchingAccounts.first
+                : null;
+
+        sheet.appendRow([
+          ex.TextCellValue(
+            dateFormat.format(transaction.date),
+          ),
+          ex.TextCellValue(
+            account?.name ?? 'Unknown',
+          ),
+          ex.TextCellValue(
+            transaction.type.name,
+          ),
+          ex.TextCellValue(
+            transaction.category,
+          ),
+          ex.TextCellValue(
+            transaction.subCategory,
+          ),
+          ex.TextCellValue(
+            transaction.merchant,
+          ),
+          ex.DoubleCellValue(
+            transaction.amount,
+          ),
+          ex.TextCellValue(
+            transaction.note,
+          ),
+        ]);
+      }
+
+      final bytes = workbook.encode();
+
+      if (bytes == null) {
+        return;
+      }
+
+      final directory =
+          await getApplicationDocumentsDirectory();
+
+      final file = File(
+        '${directory.path}/Expense_Tracker.xlsx',
+      );
+
+      await file.writeAsBytes(bytes);
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Excel file created successfully.',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Excel export failed: $e',
+          ),
+        ),
+      );
+    }
+  }
+
+  Future<void> exportPdf() async {
+    try {
+      final pdf = pw.Document();
+
+      pdf.addPage(
+        pw.MultiPage(
+          build: (context) {
+            return [
+              pw.Text(
+                'Expense Tracker',
+                style: pw.TextStyle(
+                  fontSize: 24,
+                  fontWeight: pw.FontWeight.bold,
+                ),
+              ),
+
+              pw.SizedBox(height: 12),
+
+              pw.Text(
+                'Financial Summary',
+                style: pw.TextStyle(
+                  fontSize: 16,
+                  fontWeight: pw.FontWeight.bold,
+                ),
+              ),
+
+              pw.SizedBox(height: 8),
+
+              pw.Text(
+                'Income: ${moneyFormat.format(totalIncome)}',
+              ),
+
+              pw.Text(
+                'Expense: ${moneyFormat.format(totalExpense)}',
+              ),
+
+              pw.Text(
+                'Savings: ${moneyFormat.format(savings)}',
+              ),
+
+              pw.SizedBox(height: 20),
+
+              pw.TableHelper.fromTextArray(
+                headers: [
+                  'Date',
+                  'Category',
+                  'Merchant',
+                  'Type',
+                  'Amount',
+                ],
+                data: transactions.map(
+                  (transaction) => [
+                    dateFormat.format(
+                      transaction.date,
+                    ),
+                    transaction.category,
+                    transaction.merchant,
+                    transaction.type.name,
+                    moneyFormat.format(
+                      transaction.amount,
+                    ),
+                  ],
+                ).toList(),
+              ),
+            ];
+          },
+        ),
+      );
+
+      await Printing.layoutPdf(
+        onLayout: (format) async {
+          return pdf.save();
+        },
+      );
+    } catch (e) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'PDF export failed: $e',
+          ),
+        ),
+      );
+    }
+  }
+} // <-- THIS closes ExpenseTrackerHome State
+
+
+// ============================================================
+// LOCK SCREEN
+// ============================================================
+
+class LockScreen extends StatefulWidget {
+  final bool biometricEnabled;
+  final Future<void> Function() onBiometric;
+  final void Function(String) onPin;
+
+  const LockScreen({
+    super.key,
+    required this.biometricEnabled,
+    required this.onBiometric,
+    required this.onPin,
+  });
+
+  @override
+  State<LockScreen> createState() =>
+      _LockScreenState();
+}
+
+class _LockScreenState extends State<LockScreen> {
+  final TextEditingController controller =
+      TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+
+    if (widget.biometricEnabled) {
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) async {
+          await widget.onBiometric();
+        },
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(30),
+            child: Column(
+              mainAxisAlignment:
+                  MainAxisAlignment.center,
+              children: [
+                const Icon(
+                  Icons.lock,
+                  size: 80,
+                ),
+
+                const SizedBox(height: 20),
+
+                const Text(
+                  'Expense Tracker',
+                  style: TextStyle(
+                    fontSize: 28,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+
+                const SizedBox(height: 10),
+
+                const Text(
+                  'Enter your PIN to continue',
+                  style: TextStyle(
+                    fontSize: 16,
+                  ),
+                ),
+
+                const SizedBox(height: 30),
+
+                TextField(
+                  controller: controller,
+                  keyboardType: TextInputType.number,
+                  maxLength: 4,
+                  obscureText: true,
+                  textAlign: TextAlign.center,
+                  inputFormatters: [
+                    FilteringTextInputFormatter.digitsOnly,
+                  ],
+                  decoration: const InputDecoration(
+                    labelText: 'PIN',
+                    border: OutlineInputBorder(),
+                  ),
+                  onSubmitted: (value) {
+                    widget.onPin(value);
+                  },
+                ),
+
+                const SizedBox(height: 10),
+
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: () {
+                      widget.onPin(
+                        controller.text,
+                      );
                     },
                     icon: const Icon(
                       Icons.lock_open,
@@ -3776,4 +4070,3 @@ class _LockScreenState
     );
   }
 }
-  }

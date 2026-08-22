@@ -11,8 +11,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v5
 
       - name: Setup Java 17
         uses: actions/setup-java@v5
@@ -26,14 +26,77 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Generate Android project
-        run: |
-          flutter create --platforms=android .
+      - name: Check Flutter
+        run: flutter --version
 
-      - name: Get Flutter dependencies
+      - name: Check pubspec and install dependencies
         run: flutter pub get
 
-      - name: Build APK
+      - name: Generate Android project
+        run: |
+          if [ ! -d "android" ]; then
+            flutter create --platforms=android .
+          else
+            echo "Android folder already exists."
+          fi
+
+      - name: Add SMS permissions to AndroidManifest.xml
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          manifest = Path("android/app/src/main/AndroidManifest.xml")
+
+          if not manifest.exists():
+              raise SystemExit("AndroidManifest.xml was not found.")
+
+          text = manifest.read_text()
+
+          permissions = [
+              '    <uses-permission android:name="android.permission.READ_SMS" />',
+              '    <uses-permission android:name="android.permission.RECEIVE_SMS" />'
+          ]
+
+          for permission in permissions:
+              permission_name = permission.split('android.permission.')[1].split('"')[0]
+
+              if permission_name not in text:
+                  marker = '<manifest'
+                  start = text.find(marker)
+
+                  if start == -1:
+                      raise SystemExit("Could not find <manifest> tag.")
+
+                  end = text.find('>', start)
+
+                  if end == -1:
+                      raise SystemExit("Could not find end of <manifest> tag.")
+
+                  text = (
+                      text[:end + 1]
+                      + "\n"
+                      + permission
+                      + "\n"
+                      + text[end + 1:]
+                  )
+
+          manifest.write_text(text)
+
+          print("SMS permissions added successfully.")
+          print("READ_SMS: OK")
+          print("RECEIVE_SMS: OK")
+          PY
+
+      - name: Verify SMS permissions
+        run: |
+          echo "Checking AndroidManifest.xml..."
+          grep -n "READ_SMS" android/app/src/main/AndroidManifest.xml
+          grep -n "RECEIVE_SMS" android/app/src/main/AndroidManifest.xml
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Build release APK
         run: flutter build apk --release
 
       - name: Upload APK
@@ -41,3 +104,4 @@ jobs:
         with:
           name: expense-tracker-apk
           path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
